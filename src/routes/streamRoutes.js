@@ -7,6 +7,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { validateCreateStream, validateWithdraw } = require('../validators/streamValidators');
 const methodNotAllowed = require('../middleware/methodNotAllowed');
+const mutationRateLimit = require('../middleware/mutationRateLimit');
+const { validateBatchUpdate } = require('../validators/streamValidators');
 
 const router = Router();
 
@@ -19,8 +21,12 @@ router.param('id', (req, res, next, id) => {
 });
 
 router.route('/streams')
-  .post(validate(validateCreateStream), asyncHandler(streamController.create))
+  .post(mutationRateLimit('stream.create'), validate(validateCreateStream), asyncHandler(streamController.create))
   .get(streamController.list)
+  .all(methodNotAllowed);
+
+router.route('/streams/batch')
+  .post(mutationRateLimit('stream.batch'), validate(validateBatchUpdate), asyncHandler(streamController.batchUpdate))
   .all(methodNotAllowed);
 
 router.route('/streams/:id')
@@ -36,11 +42,11 @@ router.route('/streams/:id/stats')
   .all(methodNotAllowed);
 
 router.route('/streams/:id/withdraw')
-  .post(validate(validateWithdraw), asyncHandler(streamController.withdraw))
+  .post(mutationRateLimit('stream.withdraw'), validate(validateWithdraw), asyncHandler(streamController.withdraw))
   .all(methodNotAllowed);
 
 router.route('/streams/:id/cancel')
-  .post(asyncHandler(streamController.cancel))
+  .post(mutationRateLimit('stream.cancel'), asyncHandler(streamController.cancel))
   .all(methodNotAllowed);
 
 module.exports = router;
