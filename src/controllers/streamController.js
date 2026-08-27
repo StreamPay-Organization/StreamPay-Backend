@@ -20,18 +20,26 @@ async function create(req, res) {
  * with ?limit= and ?offset= pagination.
  */
 function list(req, res) {
-  const { sender, recipient, status, limit, offset } = req.query;
+  const { sender, recipient, status, limit, offset, cursor, from, to } = req.query;
   if (status !== undefined && !ALL_STATUSES.includes(status)) {
     throw ApiError.badRequest(
       `Invalid status filter; expected one of ${ALL_STATUSES.join(', ')}`
     );
   }
-  const result = streamService.listStreams({ sender, recipient, status, limit, offset });
+  const fromTime = from === undefined ? undefined : Number(from);
+  const toTime = to === undefined ? undefined : Number(to);
+  if ((from !== undefined && !Number.isFinite(fromTime)) ||
+      (to !== undefined && !Number.isFinite(toTime)) ||
+      (fromTime !== undefined && toTime !== undefined && fromTime > toTime)) {
+    throw ApiError.badRequest('from and to must be valid ordered unix timestamps');
+  }
+  const result = streamService.listStreams({ sender, recipient, status, limit, offset, cursor, from: fromTime, to: toTime });
   res.json({
     count: result.streams.length,
     total: result.total,
     limit: result.limit,
     offset: result.offset,
+    nextCursor: result.nextCursor,
     streams: result.streams,
   });
 }

@@ -151,13 +151,63 @@ function listStreams(filter = {}) {
     .filter((s) => (filter.sender ? s.sender === filter.sender : true))
     .filter((s) => (filter.recipient ? s.recipient === filter.recipient : true))
     .filter((s) => (filter.status ? s.status === filter.status : true))
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .filter((s) => (filter.from === undefined ? true : s.createdAt >= filter.from))
+    .filter((s) => (filter.to === undefined ? true : s.createdAt <= filter.to))
+    .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
 
   const limit = clampLimit(filter.limit);
-  const offset = clampOffset(filter.offset);
-  const page = matched.slice(offset, offset + limit).map((s) => toView(s, at));
+  const decoded = filter.cursor ? decodeCursor(filter.cursor) : null;
+  let candidates = matched;
+  if (decoded) {
+    candidates = candidates.filter((s) => isAtOrBefore(s, decoded.snapshot));
+    candidates = candidates.filter((s) => isBefore(s, decoded.after));
+  }
+  const offset = decoded ? 0 : clampOffset(filter.offset);
+  const pageRecords = candidates.slice(offset, offset + limit);
+  const page = pageRecords.map((s) => toView(s, at));
+  const last = pageRecords[pageRecords.length - 1];
+  const snapshot = decoded ? decoded.snapshot : matched[0];
+  const hasMore = offset + limit < candidates.length;
 
-  return { total: matched.length, limit, offset, streams: page };
+  return {
+    total: matched.length,
+    limit,
+    offset,
+    streams: page,
+    nextCursor: hasMore && last ? encodeCursor({ snapshot, after: last }) : null,
+  };
+}
+
+function isBefore(stream, boundary) {
+  return stream.createdAt < boundary.createdAt ||
+    (stream.createdAt === boundary.createdAt && stream.id < boundary.id);
+}
+
+function isAtOrBefore(stream, boundary) {
+  return stream.createdAt < boundary.createdAt ||
+    (stream.createdAt === boundary.createdAt && stream.id <= boundary.id);
+}
+
+function encodeCursor({ snapshot, after }) {
+  return Buffer.from(JSON.stringify({
+    snapshot: { createdAt: snapshot.createdAt, id: snapshot.id },
+    after: { createdAt: after.createdAt, id: after.id },
+  })).toString('base64url');
+}
+
+function decodeCursor(value) {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (!decoded.snapshot || !decoded.after ||
+        !Number.isFinite(decoded.snapshot.createdAt) ||
+        !Number.isFinite(decoded.after.createdAt) ||
+        typeof decoded.snapshot.id !== 'string' || typeof decoded.after.id !== 'string') {
+      throw new Error('invalid shape');
+    }
+    return decoded;
+  } catch (_error) {
+    throw ApiError.badRequest('Invalid pagination cursor');
+  }
 }
 
 /**
@@ -293,6 +343,7 @@ module.exports = {
   getSchedule,
   getStats,
   listStreams,
+  encodeCursor,
   withdraw,
   cancel,
   batchUpdate,

@@ -6,6 +6,7 @@ const money = require('../utils/money');
 const { nowSeconds } = require('../utils/time');
 const { STREAM_STATUS } = require('../constants/streamStatus');
 const config = require('../config');
+const { PAGINATION } = require('../constants/pagination');
 
 /**
  * Aggregate withdrawable balance for a single user across every stream where
@@ -56,9 +57,20 @@ function withdrawableSummary() {
  * Protocol-wide analytics: total streamed across all streams, count of active
  * streams, and the total amount still locked.
  */
-function overview() {
+function overview({ windowSeconds, maxStreams } = {}) {
   const at = nowSeconds();
-  const streams = store.listStreams();
+  const requestedWindow = Number(windowSeconds);
+  const safeWindow = Number.isFinite(requestedWindow) && requestedWindow > 0
+    ? Math.min(requestedWindow, PAGINATION.MAX_WINDOW_SECONDS)
+    : PAGINATION.MAX_WINDOW_SECONDS;
+  const requestedMax = Number(maxStreams);
+  const safeMax = Number.isFinite(requestedMax) && requestedMax > 0
+    ? Math.min(Math.floor(requestedMax), PAGINATION.MAX_ANALYTICS_STREAMS)
+    : PAGINATION.MAX_ANALYTICS_STREAMS;
+  const streams = store.listStreams()
+    .filter((s) => s.createdAt >= at - safeWindow)
+    .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+    .slice(0, safeMax);
 
   let totalStreamed = 0;
   let totalLocked = 0;
@@ -89,6 +101,8 @@ function overview() {
     totalLocked,
     totalWithdrawn,
     totalWithdrawable,
+    windowSeconds: safeWindow,
+    maxStreams: safeMax,
   };
 }
 

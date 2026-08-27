@@ -61,9 +61,11 @@ after `startTime`; the window must be at least 60 seconds and at most 10 years.
 `total` must be a positive number not exceeding 1e12.
 
 `GET /api/streams` — list streams. Optional query filters: `sender`,
-`recipient`, `status` (`active` | `completed` | `cancelled`). Paginated via
-`limit` (default 50, max 200) and `offset` (default 0); the response includes
-`count` (this page), `total` (all matches), `limit` and `offset`.
+`recipient`, `status` (`active` | `completed` | `cancelled`), `from` and `to`.
+Paginated via `limit` (default 50, max 200) and `offset` (default 0). For
+stable traversal, use the returned `nextCursor` as `cursor`; cursor pages use a
+snapshot boundary so streams inserted during traversal are not duplicated or
+reordered.
 
 `GET /api/streams/:id` — fetch a single stream.
 
@@ -123,7 +125,8 @@ apply an action to the same stream more than once).
 recipient, sorted from largest to smallest.
 
 `GET /api/analytics` — protocol-wide totals: total streamed, active streams,
-total locked.
+total locked. Optional `windowSeconds` and `maxStreams` parameters are capped
+to protect aggregation latency.
 
 ## Errors
 

@@ -28,7 +28,10 @@ function withdrawable(req, res) {
  * Protocol-wide totals: total streamed, active streams, total locked.
  */
 function analytics(req, res) {
-  res.json(analyticsService.overview());
+  res.json(analyticsService.overview({
+    windowSeconds: req.query.windowSeconds,
+    maxStreams: req.query.maxStreams,
+  }));
 }
 
 module.exports = { balances, withdrawable, analytics };
