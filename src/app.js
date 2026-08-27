@@ -36,6 +36,7 @@ function corsOptions() {
  */
 function createApp() {
   const app = express();
+  app.set('trust proxy', config.trustProxy);
 
   app.use(compression());
   app.use(cors(corsOptions()));

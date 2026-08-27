@@ -171,6 +171,14 @@ All settings are read from environment variables (see `.env.example`):
   Health check and version endpoints (`/api/health`, `/api/health/live`,
   `/api/health/ready`, `/api/version`) are exempt from rate limiting so
   orchestrators and monitoring tools can poll freely.
+- `TRUST_PROXY` — set to `true` only behind a proxy that overwrites forwarded
+  address headers; defaults to `false`.
+- `MUTATION_RATE_LIMIT_*` — coordinated actor, trusted-client, and per-route
+  mutation quotas. Defaults are 20 actor mutations/minute across all routes,
+  200/minute per allowlisted trusted client, and 10/minute per actor per route.
+  `TRUSTED_RATE_LIMIT_CLIENTS` is a comma-separated allowlist for
+  `X-Client-Id`. Mutation `429` responses include `Retry-After` plus the
+  `X-Mutation-*-RateLimit-*` headers. See `docs/MUTATION_RATE_LIMITING.md`.
 - `CORS_ORIGINS` — comma-separated list of allowed origins, or `*` for any.
 - `STELLAR_*` / `NATIVE_ASSET` — mock Stellar / Soroban settings.
 

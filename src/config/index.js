@@ -14,9 +14,25 @@ const config = {
   // Maximum time a request may take before it is failed with 503.
   requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS, 10) || 15000,
 
+  // Forwarded addresses are untrusted unless the deployment explicitly opts
+  // into proxy support. The proxy must overwrite, rather than append to,
+  // forwarding headers before enabling this setting.
+  trustProxy: process.env.TRUST_PROXY === 'true',
+
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 60000,
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 120,
+    maxEntries: parseInt(process.env.RATE_LIMIT_MAX_ENTRIES, 10) || 10000,
+    mutation: {
+      windowMs: parseInt(process.env.MUTATION_RATE_LIMIT_WINDOW_MS, 10) || 60000,
+      actorMax: parseInt(process.env.MUTATION_RATE_LIMIT_ACTOR_MAX, 10) || 20,
+      trustedClientMax: parseInt(process.env.MUTATION_RATE_LIMIT_CLIENT_MAX, 10) || 200,
+      routeMax: parseInt(process.env.MUTATION_RATE_LIMIT_ROUTE_MAX, 10) || 10,
+    },
+    trustedClientIds: (process.env.TRUSTED_RATE_LIMIT_CLIENTS || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
   },
 
   // Comma-separated list of allowed CORS origins. Defaults to '*' (any origin)
@@ -53,6 +69,15 @@ function validate(cfg) {
   }
   if (!Number.isInteger(cfg.rateLimit.max) || cfg.rateLimit.max <= 0) {
     throw new Error(`Invalid RATE_LIMIT_MAX: ${cfg.rateLimit.max}`);
+  }
+  if (!Number.isInteger(cfg.rateLimit.maxEntries) || cfg.rateLimit.maxEntries <= 0) {
+    throw new Error(`Invalid RATE_LIMIT_MAX_ENTRIES: ${cfg.rateLimit.maxEntries}`);
+  }
+  const mutation = cfg.rateLimit.mutation;
+  for (const [name, value] of Object.entries(mutation)) {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`Invalid mutation rate limit ${name}: ${value}`);
+    }
   }
   if (!Number.isInteger(cfg.requestTimeoutMs) || cfg.requestTimeoutMs <= 0) {
     throw new Error(`Invalid REQUEST_TIMEOUT_MS: ${cfg.requestTimeoutMs}`);

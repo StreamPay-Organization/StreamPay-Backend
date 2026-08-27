@@ -8,35 +8,65 @@ const ApiError = require('../utils/ApiError');
  * single-process deployment; for a real cluster prefer a shared store (Redis)
  * via `express-rate-limit`. Requests are bucketed per client IP and reset at
  * the end of each window.
+ *
+ * The optional state, keyGenerator, clock, headerPrefix, and maxEntries hooks
+ * let several limiters share an identity budget while retaining independent
+ * route buckets. Expired entries are pruned on every request and a bounded
+ * oldest-entry eviction protects the process from unbounded identity churn.
  */
 function createRateLimiter(options = {}) {
-  const windowMs = options.windowMs || config.rateLimit.windowMs;
-  const max = options.max || config.rateLimit.max;
+  const windowMs = options.windowMs ?? config.rateLimit.windowMs;
+  const max = options.max ?? config.rateLimit.max;
+  const maxEntries = options.maxEntries ?? config.rateLimit.maxEntries;
   const skip = options.skip;
-  const hits = new Map();
+  const keyGenerator = options.keyGenerator || ((req) => req.ip || req.connection?.remoteAddress || 'unknown');
+  const now = options.now || (() => Date.now());
+  const headerPrefix = options.headerPrefix || 'X-RateLimit';
+  const hits = options.state || new Map();
+
+  function prune(currentTime, protectedKey) {
+    for (const [key, entry] of hits) {
+      if (currentTime >= entry.resetAt && key !== protectedKey) hits.delete(key);
+    }
+
+    if (hits.has(protectedKey)) return;
+    while (hits.size >= maxEntries) {
+      let oldestKey;
+      let oldestReset = Infinity;
+      for (const [key, entry] of hits) {
+        if (entry.resetAt < oldestReset) {
+          oldestKey = key;
+          oldestReset = entry.resetAt;
+        }
+      }
+      if (oldestKey === undefined) break;
+      hits.delete(oldestKey);
+    }
+  }
 
   return function rateLimit(req, res, next) {
     if (skip && skip(req)) {
       return next();
     }
 
-    const key = req.ip || req.connection?.remoteAddress || 'unknown';
-    const now = Date.now();
+    const key = String(keyGenerator(req) || 'unknown');
+    const currentTime = now();
+    prune(currentTime, key);
 
     let entry = hits.get(key);
-    if (!entry || now >= entry.resetAt) {
-      entry = { count: 0, resetAt: now + windowMs };
+    if (!entry || currentTime >= entry.resetAt) {
+      entry = { count: 0, resetAt: currentTime + windowMs };
       hits.set(key, entry);
     }
     entry.count += 1;
 
     const remaining = Math.max(0, max - entry.count);
-    res.setHeader('X-RateLimit-Limit', max);
-    res.setHeader('X-RateLimit-Remaining', remaining);
-    res.setHeader('X-RateLimit-Reset', Math.ceil(entry.resetAt / 1000));
+    res.setHeader(`${headerPrefix}-Limit`, max);
+    res.setHeader(`${headerPrefix}-Remaining`, remaining);
+    res.setHeader(`${headerPrefix}-Reset`, Math.ceil(entry.resetAt / 1000));
 
     if (entry.count > max) {
-      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+      const retryAfter = Math.max(1, Math.ceil((entry.resetAt - currentTime) / 1000));
       res.setHeader('Retry-After', retryAfter);
       return next(ApiError.tooManyRequests('Rate limit exceeded'));
     }
