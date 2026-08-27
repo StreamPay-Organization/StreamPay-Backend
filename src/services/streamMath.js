@@ -4,6 +4,39 @@ const { clamp } = require('../utils/time');
 const money = require('../utils/money');
 const { STREAM_STATUS } = require('../constants/streamStatus');
 
+const UNIT_FACTOR = 10 ** money.DECIMALS;
+
+/**
+ * Convert an amount into the smallest supported asset unit. Keeping the
+ * interpolation in integer units prevents a rounded midpoint from moving
+ * backwards when adjacent timestamps are projected.
+ */
+function amountToUnits(amount) {
+  const normalized = Number.isFinite(amount) ? money.round(amount) : 0;
+  return Math.max(0, Math.round(normalized * UNIT_FACTOR));
+}
+
+function unitsToAmount(units) {
+  return units / UNIT_FACTOR;
+}
+
+/**
+ * A bad clock reading must not turn a balance into NaN. Treat unknown finite
+ * context as the beginning of the stream; infinities are explicit sentinel
+ * readings and map to the corresponding boundary.
+ */
+function safeTime(atTime, startTime, endTime) {
+  if (atTime === Infinity) return endTime;
+  if (atTime === -Infinity) return startTime;
+  return Number.isFinite(atTime) ? atTime : startTime;
+}
+
+function windowFor(stream) {
+  const startTime = Number.isFinite(stream.startTime) ? stream.startTime : 0;
+  const endTime = Number.isFinite(stream.endTime) ? stream.endTime : startTime;
+  return { startTime, endTime };
+}
+
 /**
  * Core streaming math.
  *
@@ -15,17 +48,19 @@ const { STREAM_STATUS } = require('../constants/streamStatus');
  * Before startTime nothing has streamed; after endTime the full total has.
  */
 function streamedAmount(stream, atTime) {
-  const { startTime, endTime, total } = stream;
+  const { startTime, endTime } = windowFor(stream);
+  const totalUnits = amountToUnits(stream.total);
+  const time = safeTime(atTime, startTime, endTime);
 
   if (endTime <= startTime) {
     // Degenerate window: treat as fully streamed once started.
-    return atTime >= startTime ? money.round(total) : 0;
+    return time >= startTime ? unitsToAmount(totalUnits) : 0;
   }
 
-  const elapsed = clamp(atTime, startTime, endTime) - startTime;
+  const elapsed = clamp(time, startTime, endTime) - startTime;
   const duration = endTime - startTime;
-  const fraction = elapsed / duration;
-  return money.round(total * fraction);
+  const streamedUnits = Math.round((totalUnits * elapsed) / duration);
+  return unitsToAmount(Math.min(totalUnits, Math.max(0, streamedUnits)));
 }
 
 /**
@@ -43,7 +78,7 @@ function withdrawableAmount(stream, atTime) {
  * cancelled this becomes zero because the remainder was refunded.
  */
 function lockedAmount(stream, atTime) {
-  if (stream.status === STREAM_STATUS.CANCELLED) return 0;
+  if (stream.status === STREAM_STATUS.CANCELLED || stream.status === STREAM_STATUS.COMPLETED) return 0;
   const streamed = streamedAmount(stream, atTime);
   return money.subtract(stream.total, streamed);
 }
@@ -52,9 +87,10 @@ function lockedAmount(stream, atTime) {
  * Progress of a stream as a fraction in [0, 1] of total time elapsed.
  */
 function progress(stream, atTime) {
-  const { startTime, endTime } = stream;
-  if (endTime <= startTime) return atTime >= startTime ? 1 : 0;
-  const elapsed = clamp(atTime, startTime, endTime) - startTime;
+  const { startTime, endTime } = windowFor(stream);
+  const time = safeTime(atTime, startTime, endTime);
+  if (endTime <= startTime) return time >= startTime ? 1 : 0;
+  const elapsed = clamp(time, startTime, endTime) - startTime;
   return Math.round((elapsed / (endTime - startTime)) * 10000) / 10000;
 }
 
@@ -63,8 +99,9 @@ function progress(stream, atTime) {
  * window has closed (or for a degenerate window once it has started).
  */
 function remainingSeconds(stream, atTime) {
-  const { endTime } = stream;
-  return Math.max(0, endTime - atTime);
+  const { startTime, endTime } = windowFor(stream);
+  const time = safeTime(atTime, startTime, endTime);
+  return Math.max(0, endTime - time);
 }
 
 /**
@@ -81,6 +118,9 @@ function vestingProjection(stream, times) {
 }
 
 module.exports = {
+  amountToUnits,
+  unitsToAmount,
+  safeTime,
   streamedAmount,
   withdrawableAmount,
   lockedAmount,

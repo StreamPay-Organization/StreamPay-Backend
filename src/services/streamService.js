@@ -17,7 +17,7 @@ const outboxService = require('./outboxService');
  * computed amounts at the given time.
  */
 function toView(stream, atTime) {
-  const at = atTime || nowSeconds();
+  const at = atTime === undefined ? nowSeconds() : atTime;
   return {
     id: stream.id,
     sender: stream.sender,
