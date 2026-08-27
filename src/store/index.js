@@ -6,6 +6,8 @@
  * reimplementing these methods.
  */
 const streams = new Map();
+const outbox = new Map();
+const deliveredEvents = new Map();
 
 const store = {
   /**
@@ -43,6 +45,8 @@ const store = {
    */
   clear() {
     streams.clear();
+    outbox.clear();
+    deliveredEvents.clear();
   },
 
   /**
@@ -51,6 +55,9 @@ const store = {
   size() {
     return streams.size;
   },
+
+  outbox,
+  deliveredEvents,
 };
 
 module.exports = store;

@@ -10,6 +10,7 @@ const { nowSeconds } = require('../utils/time');
 const money = require('../utils/money');
 const { STREAM_STATUS } = require('../constants/streamStatus');
 const { PAGINATION } = require('../constants/pagination');
+const outboxService = require('./outboxService');
 
 /**
  * Build the public-facing view of a stream, enriching the stored record with
@@ -67,6 +68,12 @@ async function createStream(input) {
   };
 
   store.insertStream(stream);
+  outboxService.enqueue({
+    key: `${stream.id}:created`,
+    type: 'stream.created',
+    aggregateId: stream.id,
+    payload: { streamId: stream.id, sender: stream.sender, recipient: stream.recipient, total: stream.total },
+  });
   logger.info('stream created', { id: stream.id, sender: stream.sender });
   return toView(stream, now);
 }
@@ -262,6 +269,12 @@ async function withdraw(id, requestedAmount) {
     stream.status = STREAM_STATUS.COMPLETED;
   }
   store.updateStream(stream);
+  outboxService.enqueue({
+    key: `${stream.id}:withdraw:${release.txHash}`,
+    type: 'stream.withdrawn',
+    aggregateId: stream.id,
+    payload: { streamId: stream.id, amount, withdrawn: stream.withdrawn, txHash: release.txHash },
+  });
 
   logger.info('stream withdraw', { id: stream.id, amount });
   return { stream: toView(stream, now), amount, txHash: release.txHash };
@@ -292,6 +305,12 @@ async function cancel(id) {
   stream.updatedAt = now;
   stream.txHashes = { ...stream.txHashes, refund: refundTx.txHash };
   store.updateStream(stream);
+  outboxService.enqueue({
+    key: `${stream.id}:cancelled`,
+    type: 'stream.cancelled',
+    aggregateId: stream.id,
+    payload: { streamId: stream.id, refunded: refund, txHash: refundTx.txHash },
+  });
 
   logger.info('stream cancelled', { id: stream.id, refund });
   return { stream: toView(stream, now), refunded: refund, txHash: refundTx.txHash };
