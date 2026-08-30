@@ -97,7 +97,9 @@ async function cancel(req, res) {
  * own ok/error outcome so partial application is visible to the caller.
  */
 async function batchUpdate(req, res) {
-  const result = await streamService.batchUpdate(req.validated.updates);
+  const result = await streamService.batchUpdate(req.validated.updates, {
+    idempotencyKey: req.get('Idempotency-Key'),
+  });
   res.json(result);
 }
 

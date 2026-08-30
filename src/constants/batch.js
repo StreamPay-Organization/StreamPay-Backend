@@ -7,6 +7,7 @@
  */
 const BATCH = Object.freeze({
   MAX_ITEMS: 25,
+  MAX_IDEMPOTENCY_KEY_LENGTH: 128,
   ACTIONS: Object.freeze(['withdraw', 'cancel']),
 });
 

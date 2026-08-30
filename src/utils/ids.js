@@ -18,4 +18,12 @@ function newTxHash() {
   return `tx_${uuidv4().replace(/-/g, '')}`;
 }
 
-module.exports = { newStreamId, newTxHash };
+/**
+ * Generate a correlation id for one batch request. It is separate from a
+ * stream id so logs and retries can group several item outcomes safely.
+ */
+function newBatchOperationId() {
+  return `batch_${uuidv4()}`;
+}
+
+module.exports = { newStreamId, newTxHash, newBatchOperationId };
