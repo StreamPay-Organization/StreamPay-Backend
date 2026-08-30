@@ -95,22 +95,33 @@ request:
 
 `amount` is optional on `withdraw` (omitting it withdraws the full available
 balance, same as the single-stream endpoint) and not allowed on `cancel`.
-Each item is applied independently and best-effort: one item failing (stream
-not found, already cancelled, nothing withdrawable, etc.) does not stop the
-rest of the batch. The response reports a per-item outcome rather than a
-single pass/fail for the whole request:
+Each item is applied independently in input order under an explicit partial
+commit contract: one item failing (stream not found, already cancelled,
+nothing withdrawable, etc.) does not stop the rest of the batch, and successful
+items are not rolled back when a later item fails. Send an `Idempotency-Key`
+header to make retries safe; the response stores successful item outcomes and
+retries only failed items for the same normalized request. The response
+contains operation and per-item correlation IDs:
 
 ```json
 {
+  "operationId": "batch_...",
+  "correlationId": "batch_...",
+  "atomicity": "partial",
+  "replayed": false,
   "results": [
-    { "id": "stream_abc", "action": "withdraw", "ok": true, "stream": { "...": "..." }, "amount": 100, "txHash": "tx_..." },
-    { "id": "stream_def", "action": "cancel", "ok": false, "error": { "message": "Stream stream_def not found", "code": "NOT_FOUND", "statusCode": 404 } }
+    { "index": 0, "itemCorrelationId": "batch_...:item:1", "id": "stream_abc", "action": "withdraw", "ok": true, "stream": { "...": "..." }, "amount": 100, "txHash": "tx_..." },
+    { "index": 1, "itemCorrelationId": "batch_...:item:2", "id": "stream_def", "action": "cancel", "ok": false, "error": { "message": "Stream stream_def not found", "code": "NOT_FOUND", "statusCode": 404 } }
   ],
   "count": 2,
   "succeeded": 1,
-  "failed": 1
+  "failed": 1,
+  "retryableFailures": 1
 }
 ```
+
+See [`docs/BATCH_SEMANTICS.md`](docs/BATCH_SEMANTICS.md) for the complete
+retry, ordering, and failure contract.
 
 Validation happens up front and rejects the whole request if malformed: an
 empty or oversized batch, an unknown `id`/`action` shape, or the same `id`

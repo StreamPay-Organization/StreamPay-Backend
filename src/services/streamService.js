@@ -5,12 +5,13 @@ const stellarService = require('./stellarService');
 const streamMath = require('./streamMath');
 const ApiError = require('../utils/ApiError');
 const logger = require('../utils/logger');
-const { newStreamId } = require('../utils/ids');
+const { newStreamId, newBatchOperationId } = require('../utils/ids');
 const { nowSeconds } = require('../utils/time');
 const money = require('../utils/money');
 const { STREAM_STATUS } = require('../constants/streamStatus');
 const { PAGINATION } = require('../constants/pagination');
 const outboxService = require('./outboxService');
+const { BATCH } = require('../constants/batch');
 
 /**
  * Build the public-facing view of a stream, enriching the stored record with
@@ -317,42 +318,131 @@ async function cancel(id) {
 }
 
 /**
- * Apply a batch of withdraw/cancel actions in a single request. Each item is
- * applied independently and best-effort: one item failing (e.g. a stream not
- * found, or nothing withdrawable) does not stop the rest of the batch from
- * being applied. The per-item outcome is reported back so callers can tell
- * exactly which updates succeeded and which didn't, rather than getting a
- * single pass/fail for the whole request.
+ * Helpers for the batch contract. Batches are partial-commit operations: items
+ * run in request order, each gets a stable correlation id, and one item error
+ * does not roll back earlier successful items.
  */
-async function batchUpdate(updates) {
-  const results = [];
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
 
-  for (const item of updates) {
+function normalizeIdempotencyKey(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw ApiError.badRequest('Idempotency-Key must be a string');
+  }
+  const key = value.trim();
+  if (!key) return null;
+  if (key.length > BATCH.MAX_IDEMPOTENCY_KEY_LENGTH) {
+    throw ApiError.badRequest(
+      `Idempotency-Key must not exceed ${BATCH.MAX_IDEMPOTENCY_KEY_LENGTH} characters`
+    );
+  }
+  return key;
+}
+
+function batchFingerprint(updates) {
+  return JSON.stringify(updates);
+}
+
+function itemCorrelationId(operation, index) {
+  return `${operation.operationId}:item:${index + 1}`;
+}
+
+async function executeBatch(operation, updates, replayable) {
+  const results = [];
+  let replayed = replayable;
+
+  for (const [index, item] of updates.entries()) {
+    const previous = operation.outcomes.get(index);
+    if (previous && previous.ok) {
+      results.push(clone(previous));
+      continue;
+    }
+    replayed = false;
+
+    let outcome;
     try {
-      const outcome =
+      const transition =
         item.action === 'withdraw'
           ? await withdraw(item.id, item.amount)
           : await cancel(item.id);
 
-      results.push({ id: item.id, action: item.action, ok: true, ...outcome });
+      outcome = {
+        index,
+        itemCorrelationId: itemCorrelationId(operation, index),
+        id: item.id,
+        action: item.action,
+        ok: true,
+        ...transition,
+      };
     } catch (err) {
       const statusCode = err instanceof ApiError ? err.statusCode : 500;
       const code = err instanceof ApiError ? err.code : ApiError.codeFor(statusCode);
-      results.push({
+      outcome = {
+        index,
+        itemCorrelationId: itemCorrelationId(operation, index),
         id: item.id,
         action: item.action,
         ok: false,
         error: { message: err.message, code, statusCode },
-      });
+      };
     }
+    if (operation.key) {
+      store.saveBatchOutcome(operation.key, index, outcome);
+    } else {
+      operation.outcomes.set(index, clone(outcome));
+    }
+    results.push(outcome);
   }
 
+  const failed = results.filter((r) => !r.ok).length;
+  operation.completed = failed === 0;
   return {
+    operationId: operation.operationId,
+    correlationId: operation.operationId,
+    atomicity: 'partial',
+    replayed,
     results,
     count: results.length,
     succeeded: results.filter((r) => r.ok).length,
-    failed: results.filter((r) => !r.ok).length,
+    failed,
+    retryableFailures: failed,
   };
+}
+
+/**
+ * Apply a batch in input order under an explicit partial-commit contract.
+ * Successful outcomes are cached by Idempotency-Key; a retry resumes only
+ * failed items, so an already committed item is never submitted twice.
+ */
+async function batchUpdate(updates, { idempotencyKey } = {}) {
+  const key = normalizeIdempotencyKey(idempotencyKey);
+  const fingerprint = batchFingerprint(updates);
+
+  if (!key) {
+    const operation = {
+      key: null,
+      fingerprint,
+      operationId: newBatchOperationId(),
+      outcomes: new Map(),
+      completed: false,
+    };
+    return executeBatch(operation, updates, false);
+  }
+
+  return store.withBatchLock(key, async () => {
+    const existing = store.getBatchOperation(key);
+    if (existing && existing.fingerprint !== fingerprint) {
+      throw ApiError.conflict('Idempotency-Key was reused with a different batch');
+    }
+    const operation = existing || store.createBatchOperation({
+      key,
+      fingerprint,
+      operationId: newBatchOperationId(),
+    });
+    return executeBatch(operation, updates, Boolean(existing));
+  });
 }
 
 module.exports = {
@@ -366,4 +456,5 @@ module.exports = {
   withdraw,
   cancel,
   batchUpdate,
+  normalizeIdempotencyKey,
 };
