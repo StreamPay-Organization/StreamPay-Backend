@@ -8,6 +8,13 @@
 const streams = new Map();
 const outbox = new Map();
 const deliveredEvents = new Map();
+const streamLocks = new Map();
+
+function streamVersion(stream) {
+  return Number.isInteger(stream && stream.version) && stream.version > 0
+    ? stream.version
+    : 1;
+}
 
 const store = {
   /**
@@ -34,6 +41,40 @@ const store = {
   },
 
   /**
+   * Replace a stream only when its caller observed the current version.
+   * Returning false gives services a stable conflict path instead of allowing
+   * a stale transition to overwrite a newer balance-affecting transition.
+   */
+  updateStreamIfVersion(id, expectedVersion, stream) {
+    const current = streams.get(id);
+    if (!current || streamVersion(current) !== expectedVersion) return false;
+    const updated = { ...stream, version: expectedVersion + 1 };
+    streams.set(id, updated);
+    return updated;
+  },
+
+  /**
+   * Serialize all balance-affecting transitions for one stream. The callback
+   * may await the network/provider; the next callback starts only after it
+   * releases this stream's turn.
+   */
+  async withStreamLock(id, callback) {
+    const previous = streamLocks.get(id) || Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => turn);
+    streamLocks.set(id, queued);
+
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (streamLocks.get(id) === queued) streamLocks.delete(id);
+    }
+  },
+
+  /**
    * Return all streams as an array.
    */
   listStreams() {
@@ -47,6 +88,7 @@ const store = {
     streams.clear();
     outbox.clear();
     deliveredEvents.clear();
+    streamLocks.clear();
   },
 
   /**
@@ -58,6 +100,7 @@ const store = {
 
   outbox,
   deliveredEvents,
+  streamVersion,
 };
 
 module.exports = store;

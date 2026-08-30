@@ -35,6 +35,7 @@ function toView(stream, atTime) {
     remainingSeconds: streamMath.remainingSeconds(stream, at),
     createdAt: stream.createdAt,
     updatedAt: stream.updatedAt,
+    ...(stream.version === undefined ? {} : { version: store.streamVersion(stream) }),
     txHashes: stream.txHashes,
   };
 }
@@ -64,6 +65,7 @@ async function createStream(input) {
     withdrawn: 0,
     createdAt: now,
     updatedAt: now,
+    version: 1,
     txHashes: { lock: lock.txHash },
   };
 
@@ -239,9 +241,16 @@ function clampOffset(value) {
 /**
  * Release the streamed-so-far amount to the recipient.
  */
-async function withdraw(id, requestedAmount) {
+async function withdrawUnlocked(id, requestedAmount) {
   const stream = store.getStream(id);
   if (!stream) throw ApiError.notFound(`Stream ${id} not found`);
+  const expectedVersion = store.streamVersion(stream);
+  if (stream.status === STREAM_STATUS.CANCELLED) {
+    throw ApiError.conflict('Stream already cancelled');
+  }
+  if (stream.status === STREAM_STATUS.COMPLETED) {
+    throw ApiError.conflict('Stream already completed');
+  }
 
   const now = nowSeconds();
   const available = streamMath.withdrawableAmount(stream, now);
@@ -268,24 +277,26 @@ async function withdraw(id, requestedAmount) {
   if (stream.withdrawn >= stream.total && stream.status === STREAM_STATUS.ACTIVE) {
     stream.status = STREAM_STATUS.COMPLETED;
   }
-  store.updateStream(stream);
+  const updated = store.updateStreamIfVersion(stream.id, expectedVersion, stream);
+  if (!updated) throw ApiError.conflict('Stream changed; retry the withdrawal');
   outboxService.enqueue({
-    key: `${stream.id}:withdraw:${release.txHash}`,
+    key: `${updated.id}:withdraw:${release.txHash}`,
     type: 'stream.withdrawn',
-    aggregateId: stream.id,
-    payload: { streamId: stream.id, amount, withdrawn: stream.withdrawn, txHash: release.txHash },
+    aggregateId: updated.id,
+    payload: { streamId: updated.id, amount, withdrawn: updated.withdrawn, txHash: release.txHash, version: updated.version },
   });
 
-  logger.info('stream withdraw', { id: stream.id, amount });
-  return { stream: toView(stream, now), amount, txHash: release.txHash };
+  logger.info('stream withdraw', { id, amount, version: updated.version });
+  return { stream: toView(updated, now), amount, txHash: release.txHash };
 }
 
 /**
  * Cancel a stream: recipient keeps what streamed, sender reclaims the rest.
  */
-async function cancel(id) {
+async function cancelUnlocked(id) {
   const stream = store.getStream(id);
   if (!stream) throw ApiError.notFound(`Stream ${id} not found`);
+  const expectedVersion = store.streamVersion(stream);
   if (stream.status === STREAM_STATUS.CANCELLED) {
     throw ApiError.conflict('Stream already cancelled');
   }
@@ -304,16 +315,33 @@ async function cancel(id) {
   stream.status = STREAM_STATUS.CANCELLED;
   stream.updatedAt = now;
   stream.txHashes = { ...stream.txHashes, refund: refundTx.txHash };
-  store.updateStream(stream);
+  const updated = store.updateStreamIfVersion(stream.id, expectedVersion, stream);
+  if (!updated) throw ApiError.conflict('Stream changed; retry cancellation');
   outboxService.enqueue({
-    key: `${stream.id}:cancelled`,
+    key: `${updated.id}:cancelled`,
     type: 'stream.cancelled',
-    aggregateId: stream.id,
-    payload: { streamId: stream.id, refunded: refund, txHash: refundTx.txHash },
+    aggregateId: updated.id,
+    payload: { streamId: updated.id, refunded: refund, txHash: refundTx.txHash, version: updated.version },
   });
 
-  logger.info('stream cancelled', { id: stream.id, refund });
-  return { stream: toView(stream, now), refunded: refund, txHash: refundTx.txHash };
+  logger.info('stream cancelled', { id, refund, version: updated.version });
+  return { stream: toView(updated, now), refunded: refund, txHash: refundTx.txHash };
+}
+
+/**
+ * Serialize a withdrawal for this stream across the provider await and the
+ * persistence write. A second request observes the first request's new
+ * version and state instead of releasing the same balance again.
+ */
+async function withdraw(id, requestedAmount) {
+  return store.withStreamLock(id, () => withdrawUnlocked(id, requestedAmount));
+}
+
+/**
+ * Serialize cancellation with withdrawals and other cancellation attempts.
+ */
+async function cancel(id) {
+  return store.withStreamLock(id, () => cancelUnlocked(id));
 }
 
 /**
